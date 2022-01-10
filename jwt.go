@@ -2,11 +2,12 @@ package main
 
 import (
 	"bytes"
-	"crypto"
 	"crypto/sha256"
 	"github.com/golang-jwt/jwt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	//"crypto"
@@ -27,7 +28,7 @@ type JwtData struct {
 	header_raw     string
 	payLoad        map[string]interface{}
 	payLoad_raw    string
-	signature      string
+	signature      []byte
 }
 
 func base64URLEncode(str string) string {
@@ -60,8 +61,11 @@ func decodeJWT(idToken string) (jwtdata JwtData) {
 
 	decHeader, _ := base64.StdEncoding.DecodeString(header)
 	decPayload, _ := base64.StdEncoding.DecodeString(payload)
-	decSignature, _ := base64.RawURLEncoding.DecodeString(tmp[2])
-	jwtdata.signature = string(decSignature)
+	decSignature, err := base64.RawURLEncoding.DecodeString(tmp[2])
+	if err != nil {
+		log.Println(err)
+	}
+	jwtdata.signature = decSignature
 
 	json.NewDecoder(bytes.NewReader(decHeader)).Decode(&jwtdata.header)
 	json.NewDecoder(bytes.NewReader(decPayload)).Decode(&jwtdata.payLoad)
@@ -74,8 +78,7 @@ func verifyJWTSignature(jwtdata JwtData, id_token string) error {
 	pubkey := rsa.PublicKey{}
 	var keyList map[string]interface{}
 
-	keyURL := "https://www.googleapis.com/oauth2/v3/certs"
-	req, err := http.NewRequest("GET", keyURL, nil)
+	req, err := http.NewRequest("GET", oidc.keyEndpoint, nil)
 	if err != nil {
 		return fmt.Errorf("http request err : %s\n", err)
 	}
@@ -100,12 +103,12 @@ func verifyJWTSignature(jwtdata JwtData, id_token string) error {
 	hasher.Write([]byte(jwtdata.header_payload))
 
 	// 標準pkgの機能で署名検証
-	err = rsa.VerifyPKCS1v15(&pubkey, crypto.SHA256, hasher.Sum(nil), []byte(jwtdata.signature))
+	/*err = rsa.VerifyPKCS1v15(&pubkey, crypto.SHA256, hasher.Sum(nil), jwtdata.signature)
 	if err != nil {
 		return fmt.Errorf("Verify err : %s\n", err)
 	} else {
 		log.Println("Verify success by VerifyPKCS1v15!!")
-	}
+	}*/
 
 	derRsaPubKey, err := x509.MarshalPKIXPublicKey(&pubkey)
 	if err != nil {
@@ -133,10 +136,45 @@ func verifyJWTSignature(jwtdata JwtData, id_token string) error {
 	return nil
 }
 
+func verifyJWT(tokenString string) {
+
+	data, err := ioutil.ReadFile("../goauth-server/public-key.pem")
+	if err != nil {
+		log.Printf("read pub key is err : %s\n", err)
+		os.Exit(1)
+	}
+	key, err := jwt.ParseRSAPublicKeyFromPEM(data)
+	if err != nil {
+		log.Printf("parse private key err : %s\n", err)
+		os.Exit(1)
+	}
+	_ = key
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return jwt.ParseRSAPublicKeyFromPEM(data)
+	})
+	if err != nil {
+		log.Printf("verifyJWT validate: %s\n", err)
+		//os.Exit(1)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		log.Printf("verifyJWT invalid: %s\n", err)
+		//os.Exit(1)
+	}
+	if token.Valid {
+		log.Println("verifyJWT : token is 正しい!!!")
+	}
+
+	buf, _ := json.Marshal(claims)
+	_ = buf
+
+}
+
 func verifyToken(data JwtData, access_token string) error {
 
 	// トークン発行元の確認
-	if "https://accounts.google.com" != data.payLoad["iss"].(string) {
+	if oidc.iss != data.payLoad["iss"].(string) {
 		return fmt.Errorf("iss not match")
 	}
 	// クライアントIDの確認
@@ -153,10 +191,10 @@ func verifyToken(data JwtData, access_token string) error {
 		return fmt.Errorf("token time limit expired")
 	}
 	// at_hashのチェック
-	token_athash := base64URLEncode(access_token)
-	if token_athash[0:21] != data.payLoad["at_hash"].(string)[0:21] {
-		return fmt.Errorf("at_hash not match")
-	}
+	//token_athash := base64URLEncode(access_token)
+	//if token_athash[0:21] != data.payLoad["at_hash"].(string)[0:21] {
+	//	return fmt.Errorf("at_hash not match")
+	//}
 
 	return nil
 }

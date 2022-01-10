@@ -13,12 +13,14 @@ import (
 var secrets map[string]interface{}
 
 var oidc struct {
+	iss	string
 	clientId         string
 	clientSecret     string
 	state            string
 	authEndpoint     string
 	tokenEndpoint    string
 	userInfoEndpoint string
+	keyEndpoint      string
 	nonce            string
 }
 
@@ -28,6 +30,7 @@ const (
 	grant_type    = "authorization_code"
 
 	scope = "openid profile"
+	LOCAL = true
 )
 
 func readJson() {
@@ -42,11 +45,23 @@ func readJson() {
 func setUp() {
 
 	readJson()
-	oidc.clientId = secrets["web"].(map[string]interface{})["client_id"].(string)
-	oidc.clientSecret = secrets["web"].(map[string]interface{})["client_secret"].(string)
-	oidc.authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
-	oidc.tokenEndpoint = "https://www.googleapis.com/oauth2/v4/token"
-	oidc.userInfoEndpoint = "https://openidconnect.googleapis.com/v1/userinfo"
+	if LOCAL {
+		oidc.iss = "https://oreore.oidc.com"
+		oidc.clientId = "1234"
+		oidc.clientSecret = "secret"
+		oidc.authEndpoint = "http://localhost:8081/auth"
+		oidc.tokenEndpoint = "http://localhost:8081/token"
+		oidc.userInfoEndpoint = "http://localhost:8081/userinfo"
+		oidc.keyEndpoint = "http://localhost:8081/certs"
+	} else {
+		oidc.iss = "https://accounts.google.com"
+		oidc.clientId = secrets["web"].(map[string]interface{})["client_id"].(string)
+		oidc.clientSecret = secrets["web"].(map[string]interface{})["client_secret"].(string)
+		oidc.authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
+		oidc.tokenEndpoint = "https://www.googleapis.com/oauth2/v4/token"
+		oidc.userInfoEndpoint = "https://openidconnect.googleapis.com/v1/userinfo"
+		oidc.keyEndpoint = "https://www.googleapis.com/oauth2/v3/certs"
+	}
 	oidc.state = "xyz"
 	oidc.nonce = "abc"
 
@@ -67,7 +82,7 @@ func login(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, fmt.Sprintf("%s?%s", oidc.authEndpoint, v.Encode()), 302)
 }
 
-func tokenRequest(query url.Values) (map[string]interface{}, error) {
+func tokenRequest(query url.Values, c *http.Cookie) (map[string]interface{}, error) {
 
 	v := url.Values{}
 	v.Add("client_id", oidc.clientId)
@@ -80,6 +95,7 @@ func tokenRequest(query url.Values) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
+	req.AddCookie(c)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -103,13 +119,14 @@ func tokenRequest(query url.Values) (map[string]interface{}, error) {
 func callback(w http.ResponseWriter, req *http.Request) {
 
 	query := req.URL.Query()
-	token, err := tokenRequest(query)
+	c, _ := req.Cookie("session")
+	token, err := tokenRequest(query, c)
 	if err != nil {
 		log.Println(err)
 	}
 
 	id_token := token["id_token"].(string)
-
+	verifyJWT(id_token)
 	jwtdata := decodeJWT(id_token)
 	err = verifyJWTSignature(jwtdata, id_token)
 	if err != nil {
@@ -122,6 +139,7 @@ func callback(w http.ResponseWriter, req *http.Request) {
 	}
 
 	userInfoURL := oidc.userInfoEndpoint
+	log.Println(userInfoURL)
 	req, err = http.NewRequest("GET", userInfoURL, nil)
 	if nil != err {
 		log.Println(err)
@@ -138,9 +156,9 @@ func callback(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Println(err)
 	}
+	//log.Println(string(body))
 
-	log.Println(string(body))
-	w.Write(body)
+	w.Write([]byte(body))
 
 }
 
@@ -148,7 +166,10 @@ func main() {
 	setUp()
 	http.HandleFunc("/login", login)
 	http.HandleFunc("/callback", callback)
-	log.Println("start server localhost:8080...")
+	if LOCAL {
+		log.Println("start server localhost:8080...")
+		log.Println("oidc server is local mode")
+	}
 	err := http.ListenAndServe("localhost:8080", nil)
 	if err != nil {
 		log.Fatal(err)
